@@ -79,6 +79,28 @@
 #define GPIO_CLK_ENR_MASK     (0x000001FC)
 #endif
 
+#if defined(CPU_FAN_STM32L1)
+#define OPTION_BYTES          ((uint32_t*) 0x1FF80000)
+#define GET_RDP(x) (x & 0xFF)
+#elif defined(CPU_FAM_STM32F0) || defined(CPU_FAM_STM32F1) ||\
+      defined(CPU_FAM_STM32F3)
+#define OPTION_BYTES          ((uint32_t*) 0x1FFFF800)
+#define GET_RDP(x) (x & 0xFF)
+#elif defined(CPU_FAM_STM32F2) || defined(CPU_FAM_STM32F4)
+#define OPTION_BYTES          ((uint32_t*) 0x1FFFC000)
+#define GET_RDP(x) ((x & 0xFF00) >> 8)
+#elif defined(CPU_FAN_STM32F7)
+#define OPTION_BYTES          ((uint32_t*) 0x1FFF0000)
+#define GET_RDP(x) ((x & 0xFF00) >> 8)
+#endif
+
+#define RDP0                  (0)
+#define RDP1                  (1)
+#define RDP2                  (2)
+#if !defined(CONFIG_STM32_RDP)
+#define CONFIG_STM32_RDP      (RDP0)
+#endif
+
 #ifndef DISABLE_JTAG
 #define DISABLE_JTAG 0
 #endif
@@ -153,6 +175,59 @@ static void _gpio_init_ain(void)
 #endif
 
 /**
+ * @brief get the value of a register in a glitch resistant fasion
+ *
+ * This very teniously avoids optimization, even optimized it's better than
+ * nothing but periodic review should establish that it doesn't get optimized.
+ */
+__attribute__((always_inline))
+static inline uint32_t _multi_read_reg32(volatile uint32_t *addr)
+{
+    uint32_t value = *addr;
+    if (*addr != value || *addr != value) {
+        while(1);
+    }
+
+    return value;
+}
+
+/**
+ * @brief    Check RDP level is what the designer intended.
+ *
+ * RDP may not be set correctly due to manufacturing error, glitch or
+ * intentional attack.  It's done thrice to reduce the probablility of a glitch
+ * attack succeding amongst all of the multireads desgned to make it tougher.
+ *
+ * This would be best served with a random delay at the beginning of the
+ * function.  But a consistent strategy for all chips is tough.
+ */
+static void _rdp_check(void)
+{
+#if CONFIG_STM32_RDP != RDP0
+  //A delay with a strong randomness belongs here
+
+  uint32_t read1 = _multi_read_reg32(OPTION_BYTES);
+  uint32_t read2 = _multi_read_reg32(OPTION_BYTES);
+  uint32_t read3 = _multi_read_reg32(OPTION_BYTES);
+
+#if CONFIG_STM32_RDP == RDP1
+  if (GET_RDP(read1) == 0xAA ||
+      GET_RDP(read2) == 0xAA ||
+      GET_RDP(read3) == 0xAA) {
+#elif CONFIG_STM32_RDP == RDP2
+  if (GET_RDP(read1) != 0xCC ||
+      GET_RDP(read2) != 0xCC ||
+      GET_RDP(read3) != 0xCC) {
+#else
+#error "specify a valid RDP level"
+#endif
+      while(1);
+  }
+#endif
+
+}
+
+/**
  * @brief   Initialize HW debug pins for Sub-GHz Radio
  */
 void _wlx5xx_init_subghz_debug_pins(void)
@@ -212,6 +287,7 @@ void cpu_init(void)
     defined(CPU_FAM_STM32F4) || defined(CPU_FAM_STM32F7) || \
     defined(CPU_FAM_STM32L1)
     _gpio_init_ain();
+    _rdp_check();
 #endif
 #if !defined(CPU_FAM_STM32MP1) || IS_USED(MODULE_STM32MP1_ENG_MODE)
     /* initialize the system clock as configured in the periph_conf.h */
